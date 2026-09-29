@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import './index.css';
 
-const API_GATEWAY = 'http://localhost:5000';
+const API_GATEWAY = '';
 
 export default function App() {
   // State
@@ -133,7 +133,7 @@ export default function App() {
 
   const checkHealthTelemetry = async () => {
     const servicesMap = [
-      { key: 'gateway', url: 'http://localhost:5000/health' },
+      { key: 'gateway', url: '/health' },
       { key: 'catalog', url: 'http://localhost:5001/health' },
       { key: 'cart', url: 'http://localhost:5002/health' },
       { key: 'order', url: 'http://localhost:5003/health' },
@@ -171,7 +171,14 @@ export default function App() {
           productId: product.id,
           name: product.name,
           price: product.price,
-          image: product.image,
+          image: ({
+            Audio: '/products/audio.jpg',
+            Displays: '/products/displays.jpg',
+            Peripherals: '/products/peripherals.jpg',
+            Wearables: '/products/wearables.jpg',
+            Accessories: '/products/accessories.jpg',
+            'Smart Home': '/products/smart-home.jpg'
+          }[product.category] || '/products/displays.jpg'),
           quantity
         })
       });

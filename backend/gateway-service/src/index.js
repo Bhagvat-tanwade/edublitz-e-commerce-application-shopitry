@@ -10,8 +10,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'shopitry_super_secret_jwt_key_2026
 
 // Service routes configuration
 const SERVICES = {
-  catalog: process.env.CATALOG_SERVICE_URL || 'http://localhost:5001',
-  cart: process.env.CART_SERVICE_URL || 'http://localhost:5002',
+  catalog: process.env.CATALOG_SERVICE_URL || 'http://172.31.14.51:5001',
+  cart: process.env.CART_SERVICE_URL || 'http://172.31.9.14:5002',
   order: process.env.ORDER_SERVICE_URL || 'http://localhost:5003',
   payment: process.env.PAYMENT_SERVICE_URL || 'http://localhost:5004',
   notification: process.env.NOTIFICATION_SERVICE_URL || 'http://localhost:5005',
@@ -202,6 +202,10 @@ const proxyRequest = async (targetServiceUrl, targetPath, req, res) => {
 };
 
 // Route mapping to microservices
+app.use('/images', (req, res) =>
+  proxyRequest(SERVICES.catalog, `/images${req.url}`, req, res)
+);
+
 app.use('/api/catalog', (req, res) => proxyRequest(SERVICES.catalog, `/api/catalog${req.url}`, req, res));
 app.use('/api/cart', (req, res) => proxyRequest(SERVICES.cart, `/api/cart${req.url}`, req, res));
 app.use('/api/orders', (req, res) => proxyRequest(SERVICES.order, `/api/orders${req.url}`, req, res));

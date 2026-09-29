@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+const lambda = new LambdaClient({ region: 'eu-north-1' });
 require('dotenv').config();
 
 const app = express();
@@ -139,6 +141,21 @@ app.get('/api/orders/:id', (req, res) => {
   res.json({ status: 'success', data: order });
 });
 
+
+// Invoke Notification Lambda asynchronously.
+async function sendNotification(payload) {
+  try {
+    await lambda.send(new InvokeCommand({
+      FunctionName: 'shopitry-notification-service',
+      InvocationType: 'Event',
+      Payload: Buffer.from(JSON.stringify({ body: payload }))
+    }));
+    console.log('[ORDER SERVICE] Notification Lambda invoked');
+  } catch (err) {
+    console.warn('[ORDER SERVICE] Notification failed:', err.message);
+  }
+}
+
 // POST Process Checkout & Create Order
 app.post('/api/orders/checkout', async (req, res) => {
   try {
@@ -165,28 +182,42 @@ app.post('/api/orders/checkout', async (req, res) => {
     const orderId = `ord_${Date.now().toString().slice(-6)}`;
 
     // 2. Invoke Payment Microservice (AWS Lambda primitive)
-    let transactionId = `txn_sim_${Date.now()}`;
-    let paymentSuccess = true;
+    let transactionId;
 
     try {
-      console.log(`[ORDER SERVICE] Calling Payment Service at ${PAYMENT_SERVICE_URL}/api/payments/process`);
-      const paymentRes = await fetch(`${PAYMENT_SERVICE_URL}/api/payments/process`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          orderId,
-          amount: total,
-          currency: 'USD',
-          paymentMethod
-        })
-      });
+      const result = await lambda.send(new InvokeCommand({
+        FunctionName: 'shopitry-payment-service',
+        InvocationType: 'RequestResponse',
+        Payload: Buffer.from(JSON.stringify({
+          body: JSON.stringify({
+            orderId,
+            amount: total,
+            currency: 'USD',
+            paymentMethod
+          })
+        }))
+      }));
 
-      if (paymentRes.ok) {
-        const payData = await paymentRes.json();
-        transactionId = payData.transactionId || transactionId;
+      if (result.FunctionError) {
+        throw new Error('Payment Lambda execution failed');
       }
+
+      const response = JSON.parse(Buffer.from(result.Payload).toString());
+      const payment = JSON.parse(response.body || '{}');
+
+      if (response.statusCode !== 200 ||
+          payment.status !== 'APPROVED' ||
+          !payment.transactionId) {
+        throw new Error('Payment was not approved');
+      }
+
+      transactionId = payment.transactionId;
     } catch (payErr) {
-      console.warn(`[ORDER SERVICE] Payment Service call warning: ${payErr.message}. Proceeding with fallback approval.`);
+      console.error('[ORDER SERVICE] Payment failed:', payErr.message);
+      return res.status(502).json({
+        status: 'error',
+        message: 'Payment could not be completed. Order not created.'
+      });
     }
 
     // 3. Assemble New Order Object
@@ -203,7 +234,7 @@ app.post('/api/orders/checkout', async (req, res) => {
         shipping: parseFloat(shipping.toFixed(2)),
         total
       },
-      paymentStatus: paymentSuccess ? 'PAID' : 'PENDING',
+      paymentStatus: 'PAID',
       orderStatus: 'PROCESSING',
       paymentMethod,
       transactionId,
@@ -212,23 +243,14 @@ app.post('/api/orders/checkout', async (req, res) => {
 
     inMemoryOrders.unshift(newOrder);
 
-    // 4. Trigger Notification Service (AWS Lambda primitive)
-    try {
-      console.log(`[ORDER SERVICE] Triggering Notification Service at ${NOTIFICATION_SERVICE_URL}/api/notifications/send`);
-      fetch(`${NOTIFICATION_SERVICE_URL}/api/notifications/send`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          type: 'ORDER_CONFIRMATION',
-          recipientEmail: userEmail,
-          recipientName: userName,
-          orderId: newOrder.id,
-          totalAmount: newOrder.totals.total
-        })
-      }).catch(err => console.warn('Notification async trigger non-blocking error:', err.message));
-    } catch (notifErr) {
-      console.warn(`[ORDER SERVICE] Notification Service trigger skipped: ${notifErr.message}`);
-    }
+    // 4. Trigger Notification Lambda
+    sendNotification({
+      type: 'ORDER_CONFIRMATION',
+      recipientEmail: userEmail,
+      recipientName: userName,
+      orderId: newOrder.id,
+      totalAmount: newOrder.totals.total
+    });
 
     // 5. Clear Customer Cart Service Session
     try {
@@ -264,20 +286,14 @@ app.put('/api/orders/:id/status', (req, res) => {
   if (paymentStatus) inMemoryOrders[orderIndex].paymentStatus = paymentStatus;
   inMemoryOrders[orderIndex].updatedAt = new Date().toISOString();
 
-  // Send status update notification
-  try {
-    fetch(`${NOTIFICATION_SERVICE_URL}/api/notifications/send`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        type: 'ORDER_STATUS_UPDATE',
-        recipientEmail: inMemoryOrders[orderIndex].customerEmail,
-        recipientName: inMemoryOrders[orderIndex].customerName,
-        orderId: id,
-        newStatus: orderStatus
-      })
-    }).catch(() => {});
-  } catch (e) {}
+  // Send status update through Notification Lambda
+  sendNotification({
+    type: 'ORDER_STATUS_UPDATE',
+    recipientEmail: inMemoryOrders[orderIndex].customerEmail,
+    recipientName: inMemoryOrders[orderIndex].customerName,
+    orderId: id,
+    newStatus: orderStatus
+  });
 
   res.json({
     status: 'success',
